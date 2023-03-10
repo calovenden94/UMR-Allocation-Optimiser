@@ -108,7 +108,132 @@ security_database = shelve.open('security_profile_database')
 
 for i in range(len(funding_set_list)):
 
-    Run_Funding_Routine(Funding_Set=funding_set_list[i], FX_data=live_fx, security_database=security_database, folder=live_folder)
+    # Cost minimisation model is created.
+
+    cost_model = Model(name='CostMinimisation', sense=1, Funding_Set=funding_set_list[i])
+
+    # Decision variable matrices are created.
+
+    cost_model.Create_LpVariable_Allocation_Matrices()
+    cost_model.Create_LpVariable_Longbox_Matrices()
+
+    # Objective function (cost minimisation) is assigned to problem.
+
+    cost_model.Assign_LpAffineExpression_Cost_Minimisation()
+
+    # Constraints are assigned to problem.
+
+    cost_model.Assign_LpConstraint_RQV_Cover()
+    cost_model.Assign_LpConstraint_Longbox_Cover()
+    cost_model.Assign_LpConstraint_ISIN_Usage()
+    cost_model.Assign_LpConstraint_Priority_Securities()
+    cost_model.Assign_LpConstraint_Holiday_Securities()
+    cost_model.Assign_LpConstraint_Concentration_Limits(live_fx)
+    
+    # Solver algorithm is chosen and employed on the given problem.
+
+    cost_model.Apply_Solver()
+
+    # Feasibility/optimality/well-definedness is determined.
+
+    if cost_model.problem.status == 1:
+
+        print('\n' + 'Optimal solution found.')
+
+        # Result matrices are populated.
+
+        cost_model.Populate_Allocation_Result_Matrix()
+        cost_model.Populate_Longbox_Result_Matrix()
+
+        # Result matrix entry aggregation.
+
+        cost_model.Security_Usage_Calculation(cost_model.allocation_result_matrix, cost_model.longbox_result_matrix)
+
+        # Result matrix amendment.
+
+        cost_model.Security_Usage_Amendment()
+        cost_model.Minimum_Increment_Amendment(cost_model.allocation_result_matrix, security_database)
+        cost_model.Minimum_Increment_Amendment(cost_model.longbox_result_matrix, security_database)
+
+        # Post-amendment result matrix entry aggregation.
+
+        cost_model.Security_Usage_Calculation(cost_model.allocation_result_matrix, cost_model.longbox_result_matrix)
+        cost_model.Margin_Cover_Calculation()
+
+        # Constraint satisfaction check/breach export.
+
+        cost_model.Constraint_Satisfaction_Check_RQV_Cover(live_folder)
+        cost_model.Constraint_Satisfaction_Check_ISIN_Usage(live_folder)
+        cost_model.Constraint_Satisfaction_Check_Concentration_Limits(live_fx, live_folder)
+
+        # Allocation details are exported.
+
+        cost_model.Export_Allocation_Details(live_folder)
+
+        # Action files are exported.
+
+        cost_model.Export_Action_Files(live_folder)
+
+    elif cost_model.problem.status < 0:
+
+        # Basic infeasibility statistics.
+
+        print('\n' + 'Infeasible problem.')
+        print('Total Available Inventory MV (USD) = ' + '{:,.2f}'.format(sum([x.available_MV_USD for x in cost_model.inventory.securities])))
+        print('Total RQV (USD) = ' + '{:,.2f}'.format(sum([x.RQV_USD for x in cost_model.margin_set.margins])))
+
+        # Cover maximisation model is created.
+
+        cover_model = Model(name='CoverMaximisation', sense=0, Funding_Set=funding_set_list[i])
+
+        # Decision variable matrices are created.
+
+        cover_model.Create_LpVariable_Allocation_Matrices()
+
+        # Objective function (cover maximisation) is assigned to problem.
+
+        cover_model.Assign_LpAffineExpression_Cover_Maximisation()
+
+        # Constraints are assigned to problem.
+
+        cover_model.Assign_LpConstraint_RQV_Cap()
+        cover_model.Assign_LpConstraint_ISIN_Usage()
+        cover_model.Assign_LpConstraint_Concentration_Limits(live_fx)
+
+        # Solver algorithm is chosen and employed on the given problem.
+
+        cover_model.Apply_Solver()
+
+        # Feasibility/optimality/well-definedness is determined.
+
+        if cover_model.problem.status == 1:
+
+            print('\n' + 'Cover maximisation process complete.')
+
+            # Result matrix is populated.
+
+            cover_model.Populate_Allocation_Result_Matrix()
+
+            # Result matrix amendment.
+
+            cover_model.Minimum_Increment_Amendment(cover_model.allocation_result_matrix, security_database)
+
+            # Result matrix entry aggregation.
+
+            cover_model.Security_Usage_Calculation(cover_model.allocation_result_matrix)
+            cover_model.Margin_Cover_Calculation()
+
+            # Insufficient cover analysis is performed (unallocated collateral/predicted IA short).
+
+            cover_model.Insufficient_Cover_Analysis(live_folder)
+
+        else:
+
+            print('\n' + 'Problem not well-defined - check constraints.')
+        
+    else:
+
+        print('\n' + 'Problem not well-defined - check constraints.')
 
 security_database.close()
 
